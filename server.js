@@ -8,19 +8,24 @@ app.use(express.json());
 
 // ============================================
 // CONEXIÓN A NEON (PostgreSQL)
+// ✅ FIX: Se elimina pool.connect() permanente
+//         Se agrega manejo de errores para cuando
+//         Neon corta conexiones inactivas (plan free)
 // ============================================
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false }
+    ssl: { rejectUnauthorized: false },
+    max: 5,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000,
 });
 
-pool.connect((err) => {
-    if (err) {
-        console.error('❌ Error al conectar a Neon:', err.message);
-        return;
-    }
-    console.log('✨ ¡Conexión exitosa a Neon PostgreSQL!');
+// Captura errores de conexión sin crashear el servidor
+pool.on('error', (err) => {
+    console.error('⚠️ Conexión perdida con Neon (reconectando automáticamente):', err.message);
 });
+
+console.log('✨ Pool de Neon PostgreSQL listo');
 
 // ============================================
 // RUTA PARA OBTENER RESTAURANTES
@@ -54,20 +59,18 @@ app.get('/api/productos/:idRestaurante', async (req, res) => {
 
 // ============================================
 // RUTA PARA REGISTRAR UN NUEVO CLIENTE
-// ✅ FIX: Se verifica si el email existe antes de insertar
-//         Se validan campos vacíos
-//         Se separan bien los errores
+// ✅ FIX: Verifica email antes de insertar
+//         Valida campos vacíos
+//         Separa bien los errores
 // ============================================
 app.post('/api/clientes/registro', async (req, res) => {
     const { Nombre, Telefono, Direccion, Email, Password } = req.body;
 
-    // Validar que vengan los datos obligatorios
     if (!Nombre || !Email || !Password) {
         return res.status(400).json({ success: false, message: 'Faltan datos requeridos (Nombre, Email o Password)' });
     }
 
     try {
-        // Verificar primero si el email ya existe (ignorando mayúsculas)
         const existe = await pool.query(
             'SELECT "Id_Cliente" FROM clientes WHERE LOWER("Email") = LOWER($1)',
             [Email]
@@ -77,7 +80,6 @@ app.post('/api/clientes/registro', async (req, res) => {
             return res.json({ success: false, message: 'El correo ya está registrado' });
         }
 
-        // Insertar el nuevo cliente
         const result = await pool.query(
             'INSERT INTO clientes ("Nombre", "Telefono", "Direccion", "Email", "Password") VALUES ($1, $2, $3, $4, $5) RETURNING "Id_Cliente"',
             [Nombre, Telefono || '', Direccion || '', Email, Password]
@@ -100,8 +102,7 @@ app.post('/api/clientes/registro', async (req, res) => {
 
 // ============================================
 // RUTA PARA LOGIN DE CLIENTE
-// ✅ FIX: Se usa LOWER() para comparar el email
-//         sin importar mayúsculas/minúsculas
+// ✅ FIX: LOWER() para ignorar mayúsculas en email
 // ============================================
 app.post('/api/clientes/login', async (req, res) => {
     const { Email, Password } = req.body;
